@@ -1,10 +1,14 @@
 import { useRef, useState } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Image } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, Image, ScrollView } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+
+const BACKEND_URL = 'http://172.20.10.6:8000';
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [photoUri, setPhotoUri] = useState(null);
+  const [detections, setDetections] = useState(null);
+  const [status, setStatus] = useState('');
   const cameraRef = useRef(null);
 
   // Permission not loaded yet
@@ -27,14 +31,50 @@ export default function App() {
   async function capture() {
     const photo = await cameraRef.current.takePictureAsync();
     setPhotoUri(photo.uri);
+    setDetections(null);
+    setStatus('Reading text...');
+
+    try {
+      const form = new FormData();
+      form.append('image', {
+        uri: photo.uri,
+        name: 'photo.jpg',
+        type: 'image/jpeg',
+      });
+
+      const res = await fetch(`${BACKEND_URL}/read-text`, {
+        method: 'POST',
+        body: form,
+      });
+      const data = await res.json();
+      setDetections(data.detections);
+      setStatus(`Found ${data.detections.length} text region(s)`);
+    } catch (e) {
+      setStatus('Error: ' + e.message);
+    }
   }
 
-  // After capture: show the photo with a "retake" option
+  function reset() {
+    setPhotoUri(null);
+    setDetections(null);
+    setStatus('');
+  }
+
+  // After capture: show photo + the OCR results (text for now [testing purposes])
   if (photoUri) {
     return (
       <View style={styles.container}>
         <Image source={{ uri: photoUri }} style={styles.preview} />
-        <TouchableOpacity style={styles.button} onPress={() => setPhotoUri(null)}>
+        <ScrollView style={styles.results}>
+          <Text style={styles.status}>{status}</Text>
+          {detections &&
+            detections.map((d, i) => (
+              <Text key={i} style={styles.detection}>
+                {d.text}  ({Math.round(d.confidence * 100)}%)
+              </Text>
+            ))}
+        </ScrollView>
+        <TouchableOpacity style={styles.button} onPress={reset}>
           <Text style={styles.buttonText}>Retake</Text>
         </TouchableOpacity>
       </View>
@@ -62,8 +102,24 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   preview: {
-    flex: 1,
+    flex: 2,
     resizeMode: 'contain',
+  },
+  results: {
+    flex: 1,
+    backgroundColor: '#111',
+    paddingHorizontal: 20,
+  },
+  status: {
+    color: '#1e90ff',
+    fontSize: 18,
+    fontWeight: '600',
+    paddingVertical: 10,
+  },
+  detection: {
+    color: '#fff',
+    fontSize: 18,
+    paddingVertical: 4,
   },
   message: {
     color: '#fff',
