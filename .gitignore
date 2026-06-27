@@ -1,0 +1,11 @@
+CLAUDE.md
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node / Expo
+node_modules/
+.expo/
+*.log
