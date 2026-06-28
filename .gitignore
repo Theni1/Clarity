@@ -5,6 +5,9 @@ CLAUDE.md
 __pycache__/
 *.pyc
 
+# ML model weights (auto-downloaded by ultralytics)
+*.pt
+
 # Node / Expo
 node_modules/
 .expo/

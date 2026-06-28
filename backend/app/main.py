@@ -8,7 +8,8 @@ app = FastAPI(title="Clarity API")
 
 # Load models once at startup, not per request
 reader = easyocr.Reader(["en"])
-detector = YOLO("yolo11n.pt")
+detector = YOLO("yolo11x.pt")
+DETECT_MIN_CONFIDENCE = 0.5  # drop detections below this (cuts false positives)
 
 
 @app.get("/health")
@@ -39,7 +40,7 @@ async def detect(image: UploadFile):
     raw = await image.read()
     img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
 
-    results = detector(img)[0]  # one image in → take its result
+    results = detector(img, conf=DETECT_MIN_CONFIDENCE)[0]  # drop low-confidence guesses
 
     detections = []
     for b in results.boxes:

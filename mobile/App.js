@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, Image, ScrollView } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Speech from 'expo-speech';
@@ -27,7 +27,49 @@ export default function App() {
   const [status, setStatus] = useState('');
   const [selected, setSelected] = useState(null); // index of tapped text row, or null
   const [mode, setMode] = useState('text'); // 'text' or 'detect'
+  const [liveDetections, setLiveDetections] = useState([]); // objects in current frame (detect loop)
+  const [liveLayout, setLiveLayout] = useState(null); // on-screen size of live camera
   const cameraRef = useRef(null);
+  const loopActive = useRef(false); // is the detect loop running?
+  const inFlight = useRef(false); // is a /detect request currently in progress?
+
+  // Continuous detection loop
+  useEffect(() => {
+    if (mode !== 'detect') return;
+
+    loopActive.current = true;
+
+    async function detectLoop() {
+      while (loopActive.current) {
+        if (!inFlight.current && cameraRef.current) {
+          inFlight.current = true;
+          try {
+            const photo = await cameraRef.current.takePictureAsync({ quality: 0.9 });
+            const form = new FormData();
+            form.append('image', { uri: photo.uri, name: 'f.jpg', type: 'image/jpeg' });
+            const res = await fetch(`${BACKEND_URL}/detect`, { method: 'POST', body: form });
+            const data = await res.json();
+            if (loopActive.current) {
+              setLiveDetections(
+                data.detections.map((d) => ({ ...d, frameW: photo.width, frameH: photo.height }))
+              );
+            }
+          } catch (e) {
+          } finally {
+            inFlight.current = false;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 100)); // small gap before checking again
+      }
+    }
+
+    detectLoop();
+    // Cleanup: stop the loop when leaving detect mode
+    return () => {
+      loopActive.current = false;
+      setLiveDetections([]);
+    };
+  }, [mode]);
 
   // Permission not loaded yet
   if (!permission) {
@@ -111,6 +153,19 @@ export default function App() {
     return { left, top, width, height };
   }
 
+  // Scale a live-detect box (frame pixels) to the on-screen live camera size.
+  function liveBoxStyle(d) {
+    const scaleX = liveLayout.width / d.frameW;
+    const scaleY = liveLayout.height / d.frameH;
+    const [x1, y1, x2, y2] = d.box;
+    return {
+      left: x1 * scaleX,
+      top: y1 * scaleY,
+      width: (x2 - x1) * scaleX,
+      height: (y2 - y1) * scaleY,
+    };
+  }
+
   // Text mode = tappable list + detect mode = labels on boxes.
   if (photoUri) {
     const aspect = photoSize ? photoSize.width / photoSize.height : 1;
@@ -165,7 +220,19 @@ export default function App() {
   // Live camera + mode toggle + capture button
   return (
     <View style={styles.container}>
-      <CameraView ref={cameraRef} style={styles.camera} />
+      <View
+        style={styles.camera}
+        onLayout={(e) => setLiveLayout(e.nativeEvent.layout)}
+      >
+        <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} />
+        {mode === 'detect' &&
+          liveLayout &&
+          liveDetections.map((d, i) => (
+            <View key={i} style={[styles.box, liveBoxStyle(d)]}>
+              <Text style={styles.boxLabel}>{d.label}</Text>
+            </View>
+          ))}
+      </View>
 
       <View style={styles.toggle}>
         <TouchableOpacity
@@ -192,9 +259,15 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      <TouchableOpacity style={styles.captureButton} onPress={capture}>
-        <Text style={styles.buttonText}>Capture</Text>
-      </TouchableOpacity>
+      {mode === 'text' ? (
+        <TouchableOpacity style={styles.captureButton} onPress={capture}>
+          <Text style={styles.buttonText}>Capture</Text>
+        </TouchableOpacity>
+      ) : (
+        <View style={styles.captureButton}>
+          <Text style={styles.buttonText}>Detecting live…</Text>
+        </View>
+      )}
     </View>
   );
 }
