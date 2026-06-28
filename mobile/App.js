@@ -1,14 +1,31 @@
 import { useRef, useState } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, Image, ScrollView } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Speech from 'expo-speech';
 
 const BACKEND_URL = 'http://172.20.10.6:8000';
+const MIN_CONFIDENCE = 0.3;
+
+// Filter out low-confidence scores + sort into reading order
+function cleanDetections(detections) {
+  return detections
+    .filter((d) => d.confidence >= MIN_CONFIDENCE)
+    .map((d) => ({
+      ...d,
+      _top: Math.min(...d.box.map((p) => p[1])),
+      _left: Math.min(...d.box.map((p) => p[0])),
+    }))
+    .sort((a, b) => (Math.abs(a._top - b._top) > 20 ? a._top - b._top : a._left - b._left));
+}
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [photoUri, setPhotoUri] = useState(null);
+  const [photoSize, setPhotoSize] = useState(null); // actual image pixels {width, height}
+  const [layout, setLayout] = useState(null); // on-screen size of the image {width, height}
   const [detections, setDetections] = useState(null);
   const [status, setStatus] = useState('');
+  const [selected, setSelected] = useState(null); // index of tapped text row, or null
   const cameraRef = useRef(null);
 
   // Permission not loaded yet
@@ -31,7 +48,10 @@ export default function App() {
   async function capture() {
     const photo = await cameraRef.current.takePictureAsync();
     setPhotoUri(photo.uri);
+    setPhotoSize({ width: photo.width, height: photo.height });
+    setLayout(null);
     setDetections(null);
+    setSelected(null);
     setStatus('Reading text...');
 
     try {
@@ -54,26 +74,74 @@ export default function App() {
     }
   }
 
+  // Tap a row: toggle its selection (isolates its box) and speak that line.
+  function selectRow(i, text) {
+    if (selected === i) {
+      setSelected(null);
+      Speech.stop();
+    } else {
+      setSelected(i);
+      Speech.speak(text, { rate: 0.85 });
+    }
+  }
+
   function reset() {
     setPhotoUri(null);
+    setPhotoSize(null);
+    setLayout(null);
     setDetections(null);
+    setSelected(null);
     setStatus('');
   }
 
-  // After capture: show photo + the OCR results (text for now [testing purposes])
+
+  function boxStyle(box) {
+    const scaleX = layout.width / photoSize.width;
+    const scaleY = layout.height / photoSize.height;
+    const xs = box.map((p) => p[0]);
+    const ys = box.map((p) => p[1]);
+    const left = Math.min(...xs) * scaleX;
+    const top = Math.min(...ys) * scaleY;
+    const width = (Math.max(...xs) - Math.min(...xs)) * scaleX;
+    const height = (Math.max(...ys) - Math.min(...ys)) * scaleY;
+    return { left, top, width, height };
+  }
+
+  // After capture: show photo with numbered boxes + enlarged text + read-aloud
   if (photoUri) {
+    const aspect = photoSize ? photoSize.width / photoSize.height : 1;
+    const clean = detections ? cleanDetections(detections) : [];
+
     return (
       <View style={styles.container}>
-        <Image source={{ uri: photoUri }} style={styles.preview} />
+        <View style={styles.imageArea}>
+          <View
+            style={[styles.imageWrap, { aspectRatio: aspect }]}
+            onLayout={(e) => setLayout(e.nativeEvent.layout)}
+          >
+            <Image source={{ uri: photoUri }} style={styles.image} />
+            {layout &&
+              photoSize &&
+              clean.map((d, i) =>
+                // Show all boxes by default; once a row is tapped, show only that one.
+                selected === null || selected === i ? (
+                  <View key={i} style={[styles.box, boxStyle(d.box)]} />
+                ) : null
+              )}
+          </View>
+        </View>
+
         <ScrollView style={styles.results}>
           <Text style={styles.status}>{status}</Text>
-          {detections &&
-            detections.map((d, i) => (
-              <Text key={i} style={styles.detection}>
-                {d.text}  ({Math.round(d.confidence * 100)}%)
+          {clean.map((d, i) => (
+            <TouchableOpacity key={i} onPress={() => selectRow(i, d.text)}>
+              <Text style={[styles.detection, selected === i && styles.detectionSelected]}>
+                {d.text}
               </Text>
-            ))}
+            </TouchableOpacity>
+          ))}
         </ScrollView>
+
         <TouchableOpacity style={styles.button} onPress={reset}>
           <Text style={styles.buttonText}>Retake</Text>
         </TouchableOpacity>
@@ -101,9 +169,22 @@ const styles = StyleSheet.create({
   camera: {
     flex: 1,
   },
-  preview: {
+  imageArea: {
     flex: 2,
-    resizeMode: 'contain',
+    justifyContent: 'center',
+  },
+  imageWrap: {
+    width: '100%',
+    position: 'relative',
+  },
+  image: {
+    width: '100%',
+    height: '100%',
+  },
+  box: {
+    position: 'absolute',
+    borderWidth: 2,
+    borderColor: '#1e90ff',
   },
   results: {
     flex: 1,
@@ -118,8 +199,13 @@ const styles = StyleSheet.create({
   },
   detection: {
     color: '#fff',
-    fontSize: 18,
-    paddingVertical: 4,
+    fontSize: 24,
+    fontWeight: '500',
+    paddingVertical: 6,
+  },
+  detectionSelected: {
+    color: '#1e90ff',
+    fontWeight: '700',
   },
   message: {
     color: '#fff',
