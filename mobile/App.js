@@ -26,6 +26,7 @@ export default function App() {
   const [detections, setDetections] = useState(null);
   const [status, setStatus] = useState('');
   const [selected, setSelected] = useState(null); // index of tapped text row, or null
+  const [mode, setMode] = useState('text'); // 'text' or 'detect'
   const cameraRef = useRef(null);
 
   // Permission not loaded yet
@@ -52,7 +53,7 @@ export default function App() {
     setLayout(null);
     setDetections(null);
     setSelected(null);
-    setStatus('Reading text...');
+    setStatus(mode === 'text' ? 'Reading text...' : 'Detecting objects...');
 
     try {
       const form = new FormData();
@@ -62,13 +63,15 @@ export default function App() {
         type: 'image/jpeg',
       });
 
-      const res = await fetch(`${BACKEND_URL}/read-text`, {
+      const endpoint = mode === 'text' ? '/read-text' : '/detect';
+      const res = await fetch(`${BACKEND_URL}${endpoint}`, {
         method: 'POST',
         body: form,
       });
       const data = await res.json();
       setDetections(data.detections);
-      setStatus(`Found ${data.detections.length} text region(s)`);
+      const noun = mode === 'text' ? 'text region' : 'object';
+      setStatus(`Found ${data.detections.length} ${noun}(s)`);
     } catch (e) {
       setStatus('Error: ' + e.message);
     }
@@ -98,8 +101,9 @@ export default function App() {
   function boxStyle(box) {
     const scaleX = layout.width / photoSize.width;
     const scaleY = layout.height / photoSize.height;
-    const xs = box.map((p) => p[0]);
-    const ys = box.map((p) => p[1]);
+    // Text boxes are 4 corners [[x,y],...]; detect boxes are flat [x1,y1,x2,y2].
+    const xs = Array.isArray(box[0]) ? box.map((p) => p[0]) : [box[0], box[2]];
+    const ys = Array.isArray(box[0]) ? box.map((p) => p[1]) : [box[1], box[3]];
     const left = Math.min(...xs) * scaleX;
     const top = Math.min(...ys) * scaleY;
     const width = (Math.max(...xs) - Math.min(...xs)) * scaleX;
@@ -107,10 +111,11 @@ export default function App() {
     return { left, top, width, height };
   }
 
-  // After capture: show photo with numbered boxes + enlarged text + read-aloud
+  // Text mode = tappable list + detect mode = labels on boxes.
   if (photoUri) {
     const aspect = photoSize ? photoSize.width / photoSize.height : 1;
-    const clean = detections ? cleanDetections(detections) : [];
+    const items = detections || [];
+    const clean = mode === 'text' ? cleanDetections(items) : items;
 
     return (
       <View style={styles.container}>
@@ -122,24 +127,32 @@ export default function App() {
             <Image source={{ uri: photoUri }} style={styles.image} />
             {layout &&
               photoSize &&
-              clean.map((d, i) =>
-                // Show all boxes by default; once a row is tapped, show only that one.
-                selected === null || selected === i ? (
-                  <View key={i} style={[styles.box, boxStyle(d.box)]} />
-                ) : null
-              )}
+              clean.map((d, i) => {
+                if (mode === 'text' && selected !== null && selected !== i) return null;
+                return (
+                  <View key={i} style={[styles.box, boxStyle(d.box)]}>
+                    {mode === 'detect' && <Text style={styles.boxLabel}>{d.label}</Text>}
+                  </View>
+                );
+              })}
           </View>
         </View>
 
         <ScrollView style={styles.results}>
           <Text style={styles.status}>{status}</Text>
-          {clean.map((d, i) => (
-            <TouchableOpacity key={i} onPress={() => selectRow(i, d.text)}>
-              <Text style={[styles.detection, selected === i && styles.detectionSelected]}>
-                {d.text}
-              </Text>
-            </TouchableOpacity>
-          ))}
+          {mode === 'text'
+            ? clean.map((d, i) => (
+                <TouchableOpacity key={i} onPress={() => selectRow(i, d.text)}>
+                  <Text style={[styles.detection, selected === i && styles.detectionSelected]}>
+                    {d.text}
+                  </Text>
+                </TouchableOpacity>
+              ))
+            : clean.map((d, i) => (
+                <Text key={i} style={styles.detection}>
+                  {d.label} ({Math.round(d.confidence * 100)}%)
+                </Text>
+              ))}
         </ScrollView>
 
         <TouchableOpacity style={styles.button} onPress={reset}>
@@ -149,10 +162,36 @@ export default function App() {
     );
   }
 
-  // Live camera + capture button
+  // Live camera + mode toggle + capture button
   return (
     <View style={styles.container}>
       <CameraView ref={cameraRef} style={styles.camera} />
+
+      <View style={styles.toggle}>
+        <TouchableOpacity
+          style={[styles.toggleOption, mode === 'text' && styles.toggleActive]}
+          onPress={() => setMode('text')}
+        >
+          <Text
+            style={[styles.toggleText, mode === 'text' && styles.toggleTextActive]}
+            numberOfLines={1}
+          >
+            Read Text
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.toggleOption, mode === 'detect' && styles.toggleActive]}
+          onPress={() => setMode('detect')}
+        >
+          <Text
+            style={[styles.toggleText, mode === 'detect' && styles.toggleTextActive]}
+            numberOfLines={1}
+          >
+            Detect Objects
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       <TouchableOpacity style={styles.captureButton} onPress={capture}>
         <Text style={styles.buttonText}>Capture</Text>
       </TouchableOpacity>
@@ -186,6 +225,18 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#1e90ff',
   },
+  boxLabel: {
+    position: 'absolute',
+    top: -20,
+    left: -2,
+    backgroundColor: '#1e90ff',
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    overflow: 'hidden',
+  },
   results: {
     flex: 1,
     backgroundColor: '#111',
@@ -212,6 +263,29 @@ const styles = StyleSheet.create({
     fontSize: 22,
     textAlign: 'center',
     marginBottom: 20,
+  },
+  toggle: {
+    flexDirection: 'row',
+    backgroundColor: '#111',
+    height: 56,
+  },
+  toggleOption: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#111',
+  },
+  toggleActive: {
+    backgroundColor: '#1e90ff',
+  },
+  toggleText: {
+    color: '#888',
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  toggleTextActive: {
+    color: '#fff',
+    fontWeight: '700',
   },
   captureButton: {
     backgroundColor: '#1e90ff',
