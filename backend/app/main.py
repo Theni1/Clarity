@@ -9,7 +9,7 @@ app = FastAPI(title="Clarity API")
 # Load models once at startup, not per request
 reader = easyocr.Reader(["en"])
 detector = YOLO("yolo11x.pt")
-DETECT_MIN_CONFIDENCE = 0.5  # drop detections below this (cuts false positives)
+DETECT_MIN_CONFIDENCE = 0.3  # drop detections below this (cuts false positives)
 
 
 async def _decode(image: UploadFile):
@@ -18,18 +18,19 @@ async def _decode(image: UploadFile):
 
 
 def _read_text(img):
+    # mag_ratio=2 upscales the image before OCR (better at small/hard-to-read text)
     return [
         {
             "text": text,
             "box": [[int(x), int(y)] for x, y in box],
             "confidence": float(conf),
         }
-        for box, text, conf in reader.readtext(img)
+        for box, text, conf in reader.readtext(img, mag_ratio=2)
     ]
 
 
 def _detect_objects(img):
-    results = detector(img, conf=DETECT_MIN_CONFIDENCE)[0]
+    results = detector(img, conf=DETECT_MIN_CONFIDENCE, verbose=False)[0]
     return [
         {
             "label": detector.names[int(b.cls)],
